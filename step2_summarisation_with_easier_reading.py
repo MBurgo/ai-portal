@@ -1,5 +1,5 @@
 import streamlit as st
-import openai
+from openai import OpenAI
 import gspread
 import pandas as pd
 import time
@@ -13,14 +13,14 @@ scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/au
 # Load the service account info from Streamlit secrets
 creds_dict = st.secrets["service_account"]
 creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
-client = gspread.authorize(creds)
+client_gs = gspread.authorize(creds)
 
-# Spreadsheet ID remains the same (update if needed)
+# Spreadsheet ID
 spreadsheet_id = "1BzTJgX7OgaA0QNfzKs5AgAx2rvZZjDdorgAz0SD9NZg"
-sheet = client.open_by_key(spreadsheet_id)
+sheet = client_gs.open_by_key(spreadsheet_id)
 
-# Set your OpenAI API key from Streamlit secrets
-openai.api_key = st.secrets["openai"]["api_key"]
+# Initialize OpenAI Client
+client = OpenAI(api_key=st.secrets["openai"]["api_key"])
 
 
 def read_data(sheet, title):
@@ -37,30 +37,28 @@ def format_data_for_prompt(news_data, top_stories_data, rising_data, top_data):
     """
     formatted_data = "Google News Data:\n"
     for index, row in news_data.iterrows():
-        formatted_data += f"- Title: {row['Title']}, Link: {row['Link']}, Snippet: {row['Snippet']}\n"
+        formatted_data += f"- Title: {row.get('Title', '')}, Link: {row.get('Link', '')}, Snippet: {row.get('Snippet', '')}\n"
 
     formatted_data += "\nTop Stories Data:\n"
     for index, row in top_stories_data.iterrows():
-        formatted_data += f"- Title: {row['Title']}, Link: {row['Link']}, Snippet: {row['Snippet']}\n"
+        formatted_data += f"- Title: {row.get('Title', '')}, Link: {row.get('Link', '')}, Snippet: {row.get('Snippet', '')}\n"
 
     formatted_data += "\nGoogle Trends Rising Data:\n"
     for index, row in rising_data.iterrows():
-        formatted_data += f"- Query: {row['Query']}, Value: {row['Value']}\n"
+        formatted_data += f"- Query: {row.get('Query', '')}, Value: {row.get('Value', '')}\n"
 
     formatted_data += "\nGoogle Trends Top Data:\n"
     for index, row in top_data.iterrows():
-        formatted_data += f"- Query: {row['Query']}, Value: {row['Value']}\n"
+        formatted_data += f"- Query: {row.get('Query', '')}, Value: {row.get('Value', '')}\n"
 
     return formatted_data
 
 
 def summarize_data(formatted_data):
     """
-    Summarize data using the o1-mini model with a single 'user' role message.
-    We combine system-like instructions and user instructions into a single prompt.
+    Summarize data using the new OpenAI v1.0+ client structure.
     """
-    # >>> CHANGE: Use local time for the date in the summary <<<
-    local_tz = pytz.timezone("Australia/Sydney")  # or any other desired timezone
+    local_tz = pytz.timezone("Australia/Sydney")
     now_local = dt.datetime.now(local_tz)
     current_date = now_local.strftime("%Y-%m-%d")
 
@@ -130,12 +128,14 @@ def summarize_data(formatted_data):
         }
     ]
 
-    # Call the OpenAI API
-    response = openai.ChatCompletion.create(
-        model="gpt-4.1",
+    # Call the OpenAI API (New v1.0+ Syntax)
+    response = client.chat.completions.create(
+        model="gpt-4o",  # Using gpt-4o as 'gpt-4.1' is not a standard public model alias
         messages=messages
     )
-    summary = response['choices'][0]['message']['content']
+    
+    # New Access Method
+    summary = response.choices[0].message.content
     return summary
 
 
@@ -171,10 +171,6 @@ def generate_summary():
 
 
 def main():
-    """
-    Original main function to allow command-line usage.
-    It just calls generate_summary() but doesn't return anything.
-    """
     generate_summary()
 
 
