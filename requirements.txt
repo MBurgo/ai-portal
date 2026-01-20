@@ -1,0 +1,10 @@
+streamlit
+openai
+google-generativeai
+gspread
+google-auth
+pandas
+python-docx
+beautifulsoup4
+httpx
+serpapi
