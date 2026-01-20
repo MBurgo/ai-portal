@@ -73,9 +73,20 @@ def run_all_cooldown(sheet_obj, cooldown_hours=3):
 st.title("Daily Market Intelligence")
 st.markdown("### what is the market focusing on?")
 
+# 1. State Management (The Fix)
+if "briefing_report" not in st.session_state:
+    st.session_state.briefing_report = None
+
+# 2. Generation Button (Only runs logic, doesn't hold UI)
 if st.button("Generate Briefing"):
     # Run scraping logic
     full_summary = run_all_cooldown(sheet, cooldown_hours=3)
+    # Save to session state so it persists
+    st.session_state.briefing_report = full_summary
+
+# 3. Display Logic (Checks State, not the Button)
+if st.session_state.briefing_report:
+    full_summary = st.session_state.briefing_report
     
     # Parse results
     individual_briefs = parse_briefs(full_summary)
@@ -88,6 +99,7 @@ if st.button("Generate Briefing"):
             st.markdown(brief)
             
             # THE GOLDEN THREAD BUTTON
+            # This is now safe because it's outside the first button's scope
             if st.button(f"🚀 Draft Campaign for Opp #{idx+1}", key=f"btn_{idx}"):
                 st.session_state['intelligence_brief'] = brief
                 st.session_state['intelligence_source'] = "Daily Briefing"
