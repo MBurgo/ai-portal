@@ -10,7 +10,7 @@ st.markdown("Interact with the AgentKit Web Agent below to identify high-growth 
 
 # 2. The Iframe (Window to your Next.js App)
 # REPLACE THIS URL with your deployed Next.js URL (e.g., https://your-vercel-app.vercel.app)
-AGENT_URL = "http://localhost:3000" 
+AGENT_URL = "https://openai-chatkit-starter-app-opal-xi.vercel.app/" 
 
 st.components.v1.iframe(src=AGENT_URL, height=600, scrolling=True)
 
