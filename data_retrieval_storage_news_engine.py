@@ -1,36 +1,29 @@
 """
 data_retrieval_storage_news_engine.py
 ------------------------------------
-Phase 1 refactor – v1.2 (10 Jul 2025)
-
-• Batch write, async meta fetch, duplicate cap
-• Browser‑UA header to reduce HTTP 403 on meta fetch
-• Fallback to SerpAPI snippet if meta unavailable
-• Deprecation warnings resolved
+Refactored for Portal Integration
 """
 
-# ---------- stdlib ----------
 import asyncio
 import datetime as dt
 import time
 from typing import List
-
-# ---------- third‑party ----------
 import gspread
 import httpx
 from bs4 import BeautifulSoup
 import streamlit as st
 from google.oauth2.service_account import Credentials
-from pytrends.exceptions import TooManyRequestsError
-from serpapi import GoogleSearch
+# NOTE: We use the google-search-results library, but the import is 'serpapi'
+from serpapi import GoogleSearch 
+from utils import get_gspread_client 
 
 # ---------------------------------------------------------------------
-# CONFIG – tweak here
+# CONFIG
 # ---------------------------------------------------------------------
-CAP_NEWS         = 40   # max unique rows kept in “Google News”
-CAP_TOP_STORIES  = 40   # max rows kept in “Top Stories”
-CAP_TRENDS       = 20   # max rows in each Trends sheet
-DEBUG_COUNTS     = False  # True prints raw vs. deduped counts
+CAP_NEWS         = 40   
+CAP_TOP_STORIES  = 40   
+CAP_TRENDS       = 20   
+DEBUG_COUNTS     = False  
 
 BROWSER_HEADERS = {
     "User-Agent": (
@@ -41,29 +34,18 @@ BROWSER_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-# ---------------------------------------------------------------------
-# 1  Google Sheets client & SerpAPI key
-# ---------------------------------------------------------------------
-SCOPE = [
-    "https://spreadsheets.google.com/feeds",
-    "https://www.googleapis.com/auth/drive",
-]
-
-creds_dict = st.secrets["service_account"]
-creds      = Credentials.from_service_account_info(creds_dict, scopes=SCOPE)
-client     = gspread.authorize(creds)
-
 SPREADSHEET_ID = "1BzTJgX7OgaA0QNfzKs5AgAx2rvZZjDdorgAz0SD9NZg"
-sheet          = client.open_by_key(SPREADSHEET_ID)
-
-SERP_API_KEY = st.secrets["serpapi"]["api_key"]
 
 # ---------------------------------------------------------------------
-# 2  SerpAPI fetch helpers
+# 1. SerpAPI Fetch Helpers (Lazy Loaded)
 # ---------------------------------------------------------------------
+def get_api_key():
+    """Safely get the API key only when needed."""
+    return st.secrets["serpapi"]["api_key"]
+
 def fetch_google_news() -> List[dict]:
     params = {
-        "api_key": SERP_API_KEY,
+        "api_key": get_api_key(),
         "engine": "google",
         "no_cache": "true",
         "q": "asx 200",
@@ -77,20 +59,18 @@ def fetch_google_news() -> List[dict]:
     }
     return GoogleSearch(params).get_dict().get("news_results", [])
 
-
 def fetch_google_top_stories() -> List[dict]:
     params = {
-        "api_key": SERP_API_KEY,
+        "api_key": get_api_key(),
         "q": "asx+200",
         "hl": "en",
         "gl": "au",
     }
     return GoogleSearch(params).get_dict().get("top_stories", [])
 
-
 def fetch_google_trends():
     params = {
-        "api_key": SERP_API_KEY,
+        "api_key": get_api_key(),
         "engine": "google_trends",
         "q": "/m/0bl5c2",
         "geo": "AU",
@@ -100,6 +80,9 @@ def fetch_google_trends():
     }
 
     attempts = 0
+    # Use the lazy import here to avoid top-level dependency issues if installed late
+    from pytrends.exceptions import TooManyRequestsError
+    
     while attempts < 5:
         try:
             results = GoogleSearch(params).get_dict()
@@ -108,20 +91,24 @@ def fetch_google_trends():
             return rising, top
         except TooManyRequestsError:
             wait = (2 ** attempts) * 10
-            print(f"Google Trends rate‑limited – sleeping {wait}s")
+            print(f"Google Trends rate-limited – sleeping {wait}s")
             time.sleep(wait)
             attempts += 1
-    raise RuntimeError("Google Trends fetch failed after multiple attempts.")
+        except Exception as e:
+            # Fallback for generic errors to prevent hard crash
+            print(f"Trend fetch error: {e}")
+            return [], []
+            
+    return [], [] # Return empty if failed
 
 # ---------------------------------------------------------------------
-# 3  Worksheet utilities
+# 2. Worksheet Utilities
 # ---------------------------------------------------------------------
 def ensure_worksheet_exists(sheet_obj, title: str):
     try:
         return sheet_obj.worksheet(title)
     except gspread.exceptions.WorksheetNotFound:
         return sheet_obj.add_worksheet(title=title, rows="100", cols="20")
-
 
 def overwrite_worksheet(ws, header: List[str], rows: List[List]):
     ws.resize(rows=len(rows) + 1, cols=len(header))
@@ -132,7 +119,7 @@ def overwrite_worksheet(ws, header: List[str], rows: List[List]):
     )
 
 # ---------------------------------------------------------------------
-# 4  Data hygiene helpers
+# 3. Data Hygiene Helpers
 # ---------------------------------------------------------------------
 def dedupe_rows(rows: List[List], key_index: int, keep_n: int) -> List[List]:
     seen, out = set(), []
@@ -146,7 +133,7 @@ def dedupe_rows(rows: List[List], key_index: int, keep_n: int) -> List[List]:
     return out
 
 # ---------------------------------------------------------------------
-# 5  Concurrent meta‑description fetch
+# 4. Async Meta Fetch
 # ---------------------------------------------------------------------
 async def _grab_desc(session: httpx.AsyncClient, url: str) -> str:
     if not url or not url.startswith("http"):
@@ -174,9 +161,9 @@ async def fetch_meta_descriptions(urls: List[str], limit: int = 10) -> List[str]
         return await asyncio.gather(*(bound(u) for u in urls))
 
 # ---------------------------------------------------------------------
-# 6  Storage orchestrator
+# 5. Storage Orchestrator
 # ---------------------------------------------------------------------
-def store_data_in_google_sheets(news_data, top_stories_data, rising_data, top_data):
+def store_data_in_google_sheets(sheet, news_data, top_stories_data, rising_data, top_data):
     # ---------- Google News ----------
     news_rows = [
         [a.get("title") or "No Title",
@@ -184,17 +171,19 @@ def store_data_in_google_sheets(news_data, top_stories_data, rising_data, top_da
          a.get("snippet") or "No Snippet"]
         for a in news_data
     ]
-    if DEBUG_COUNTS:
-        print(f"Google News – raw: {len(news_rows)}, unique links: {len({r[1] for r in news_rows})}")
-
+    
     news_rows = dedupe_rows(news_rows, key_index=1, keep_n=CAP_NEWS)
-    snippet_lookup_news = {r[1]: r[2] for r in news_rows}  # link -> snippet
+    snippet_lookup_news = {r[1]: r[2] for r in news_rows}
 
-    news_meta = asyncio.run(fetch_meta_descriptions([r[1] for r in news_rows]))
+    # Use a new loop just for metadata to ensure async loop is managed correctly
+    try:
+        news_meta = asyncio.run(fetch_meta_descriptions([r[1] for r in news_rows]))
+    except RuntimeError:
+        # If an event loop is already running (Streamlit sometimes does this), fallback
+        news_meta = ["No Meta (Async Error)"] * len(news_rows)
+
     for row, meta in zip(news_rows, news_meta):
-        # append fetched meta or placeholder
         row.append(meta if meta else "No Meta Description")
-        # fallback to snippet if meta fetch failed
         if meta.startswith("HTTP") or meta.startswith("Error"):
             row[-1] = snippet_lookup_news.get(row[1], "No Meta Description")
 
@@ -211,13 +200,15 @@ def store_data_in_google_sheets(news_data, top_stories_data, rising_data, top_da
          s.get("snippet") or "No Snippet"]
         for s in top_stories_data
     ]
-    if DEBUG_COUNTS:
-        print(f"Top Stories – raw: {len(top_rows)}")
-
+    
     top_rows = dedupe_rows(top_rows, key_index=1, keep_n=CAP_TOP_STORIES)
     snippet_lookup_top = {r[1]: r[2] for r in top_rows}
 
-    top_meta = asyncio.run(fetch_meta_descriptions([r[1] for r in top_rows]))
+    try:
+        top_meta = asyncio.run(fetch_meta_descriptions([r[1] for r in top_rows]))
+    except RuntimeError:
+        top_meta = ["No Meta (Async Error)"] * len(top_rows)
+        
     for row, meta in zip(top_rows, top_meta):
         row.append(meta if meta else "No Meta Description")
         if meta.startswith("HTTP") or meta.startswith("Error"):
@@ -246,19 +237,22 @@ def store_data_in_google_sheets(news_data, top_stories_data, rising_data, top_da
     )
 
 # ---------------------------------------------------------------------
-# 7  Main entry point
+# 6. Main Entry Point
 # ---------------------------------------------------------------------
 def main():
-    now_utc = dt.datetime.now(dt.UTC)
+    # Initialize connection ONLY when function is called
+    client = get_gspread_client()
+    sheet = client.open_by_key(SPREADSHEET_ID)
+    
+    now_utc = dt.datetime.now(dt.timezone.utc)
     print(f"=== Data scrape started {now_utc.isoformat(timespec='seconds')}Z ===")
 
     news_data        = fetch_google_news()
     top_stories_data = fetch_google_top_stories()
     rising_data, top_data = fetch_google_trends()
 
-    store_data_in_google_sheets(news_data, top_stories_data, rising_data, top_data)
+    store_data_in_google_sheets(sheet, news_data, top_stories_data, rising_data, top_data)
     print("=== Data scrape finished ===")
-
 
 if __name__ == "__main__":
     main()
